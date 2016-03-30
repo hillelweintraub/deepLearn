@@ -63,7 +63,9 @@ class SdA(object):
         n_ins=784,
         hidden_layers_sizes=[500, 500],
         n_outs=10,
-        corruption_levels=[0.1, 0.1]
+        corruption_levels=[0.1, 0.1],
+        L1_reg = 0.,
+        L2_reg = 0.
     ):
         """ This class is made to support a variable number of layers.
 
@@ -167,11 +169,25 @@ class SdA(object):
         )
 
         self.params.extend(self.logLayer.params)
+        
+        #Generate terms for L1 and L2 regularization
+        self.L1 = 0
+        self.L2_sqr = 0
+        for i in xrange(self.n_layers):
+	  self.L1 += abs(self.sigmoid_layers[i].W).sum()
+	  self.L2_sqr += (self.sigmoid_layers[i].W ** 2).sum()
+	self.L1 += abs(self.logLayer.W).sum()
+	self.L2_sqr += (self.logLayer.W ** 2).sum()
+        
         # construct a function that implements one step of finetunining
 
         # compute the cost for second phase of training,
         # defined as the negative log likelihood
-        self.finetune_cost = self.logLayer.negative_log_likelihood(self.y)
+        self.finetune_cost = (
+	  self.logLayer.negative_log_likelihood(self.y)
+	  + L1_reg*self.L1
+	  + L2_reg*self.L2_sqr
+	)
         # compute the gradients with respect to the model parameters
         # symbolic variable that points to the number of errors made on the
         # minibatch given by self.x and self.y
@@ -228,7 +244,7 @@ class SdA(object):
 
         return pretrain_fns
 
-    def build_finetune_functions(self, datasets, batch_size, learning_rate):
+    def build_finetune_functions(self, datasets, batch_size):
         '''Generates a function `train` that implements one step of
         finetuning, a function `validate` that computes the error on
         a batch from the validation set, and a function `test` that
@@ -244,8 +260,6 @@ class SdA(object):
         :type batch_size: int
         :param batch_size: size of a minibatch
 
-        :type learning_rate: float
-        :param learning_rate: learning rate used during finetune stage
         '''
 
         (train_set_x, train_set_y) = datasets[0]
@@ -259,6 +273,7 @@ class SdA(object):
         n_test_batches /= batch_size
 
         index = T.lscalar('index')  # index to a [mini]batch
+        learning_rate = T.scalar('lr')  # learning rate to use
 
         # compute the gradients with respect to the model parameters
         gparams = T.grad(self.finetune_cost, self.params)
@@ -270,7 +285,8 @@ class SdA(object):
         ]
 
         train_fn = theano.function(
-            inputs=[index],
+            inputs=[index,
+		    theano.Param(learning_rate, default=0.1)],
             outputs=self.finetune_cost,
             updates=updates,
             givens={
@@ -298,7 +314,7 @@ class SdA(object):
             name='test'
         )
 
-        valid_score_i = theano.function(
+        valid_zero_one_i = theano.function(
             [index],
             self.errors,
             givens={
@@ -309,18 +325,35 @@ class SdA(object):
                     index * batch_size: (index + 1) * batch_size
                 ]
             },
-            name='valid'
+            name='valid_zero_one'
+        )
+		
+        valid_NLL_i = theano.function(
+            inputs=[index],
+            outputs=self.finetune_cost,            
+            givens={
+                self.x: valid_set_x[
+                    index * batch_size: (index + 1) * batch_size
+                ],
+                self.y: valid_set_y[
+                    index * batch_size: (index + 1) * batch_size
+                ]
+            },
+            name='valid_NLL'
         )
 
-        # Create a function that scans the entire validation set
-        def valid_score():
-            return [valid_score_i(i) for i in xrange(n_valid_batches)]
+        # Create functions that scans the entire validation set
+        def valid_zero_one():
+            return [valid_zero_one_i(i) for i in xrange(n_valid_batches)]
+	  
+	def valid_NLL():
+	  return [valid_NLL_i(i) for i in xrange(n_valid_batches)]
 
         # Create a function that scans the entire test set
         def test_score():
             return [test_score_i(i) for i in xrange(n_test_batches)]
 
-        return train_fn, valid_score, test_score
+        return train_fn, valid_NLL, valid_zero_one, test_score
 
 
 def test_SdA(finetune_lr=0.1, pretraining_epochs=15,

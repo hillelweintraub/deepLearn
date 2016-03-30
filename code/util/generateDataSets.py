@@ -87,7 +87,7 @@ def process_and_pickle_matfiles(data_file,gt_file,save_file):
   pickle_dataset(data,data_gt,save_file)
   
 
-def split_to_train_val_test(file_name,split_proportions=[6,2,2],random_split=True):
+def split_to_train_val_test(file_name,split_proportions=[6,2,2],random_split=False,remove_outliers=True):
   """
     Loads data, and data_gt variables from a dataset file and splits the data into 
     training, validation, and test data using a given split proportion.
@@ -115,10 +115,25 @@ def split_to_train_val_test(file_name,split_proportions=[6,2,2],random_split=Tru
   assert len(split_proportions)==3, ("Error: expecting a split proportion value for "
                                       "training validation and test sets")
   data,data_gt = load_pickled_dataset(file_name)
+  #remove outliers
+  if remove_outliers:
+    flen=len(file_name)
+    assert file_name[flen-7:flen]=='KSC.pkl', 'Recheck outliers for new dataset'
+    maxes = numpy.max(data,axis=1)
+    data = data[maxes<.9,:]
+    data_gt = data_gt[maxes<.9]
+    #renormalize data
+    data = data/float( data.max() )
+  
   #we need the class labels to start from 0 so shift them if they  don't
   if data_gt.min() == 1: data_gt -= 1
   p = range(len(data))  
-  if random_split: random.shuffle(p)
+  #we need to shuffle the data to get a uniform sampling of class examples in
+  #each of the train,validation ,and test sets.
+  #But, we'll seed the rng to get the same random shuffling every time unless
+  #random_split is set to True
+  if not random_split: random.seed(12345)
+  random.shuffle(p)
   split_idxs = len(data) * numpy.cumsum(split_proportions)/numpy.sum(split_proportions)
   
   train_idxs = p[0:split_idxs[0]]
